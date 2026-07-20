@@ -7,7 +7,7 @@ Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificat
 - A Linux server with a public IPv4 address
 - Bash and a working Docker installation
 - A domain or subdomain delegated to the server
-- A licensed Burp Suite Professional JAR
+- A Burp Suite JAR containing the Collaborator server
 - Internet access to ports used by Collaborator
 
 No host installation of Java, Certbot, `jq`, `openssl`, or `bc` is required.
@@ -48,7 +48,7 @@ On first use, the wizard asks for:
 
 - The delegated domain, such as `collab.example.com`
 - The server's public IPv4 address
-- The path to your Burp Suite Professional JAR
+- The path to your Burp Suite JAR
 
 The command copies the JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. Later invocations simply start the existing installation.
 
@@ -60,13 +60,13 @@ For unattended setup, provide named flags:
 ./collaborator up \
   --domain collab.example.com \
   --ip 1.2.3.4 \
-  --jar /path/to/burpsuite_pro.jar
+  --jar /path/to/burpsuite.jar
 ```
 
 The positional form remains available:
 
 ```bash
-./collaborator up collab.example.com 1.2.3.4 /path/to/burpsuite_pro.jar
+./collaborator up collab.example.com 1.2.3.4 /path/to/burpsuite.jar
 ```
 
 ### Use a config file
@@ -80,7 +80,7 @@ cp collaborator.conf.example collaborator.conf
 ```ini
 domain=collab.example.com
 public_ip=1.2.3.4
-burp_jar=/path/to/burpsuite_pro.jar
+burp_jar=/path/to/burpsuite.jar
 ```
 
 Then start the deployment:
@@ -164,7 +164,7 @@ Docker-published ports can bypass ordinary UFW expectations. Review the host's D
 
 ## Configure Burp Suite
 
-In Burp Suite Professional, open the Collaborator server settings and use your delegated domain. This project exposes secure polling on port `9443`.
+In Burp Suite, open the Collaborator server settings and use your delegated domain. This project exposes secure polling on port `9443`.
 
 The generated server configuration is stored at `burp/conf/burp.config`. The randomly generated metrics path is printed after first-time setup.
 
@@ -173,7 +173,7 @@ The generated server configuration is stored at `burp/conf/burp.config`. The ran
 Replace the stored JAR and restart the deployment:
 
 ```bash
-cp /path/to/new/burpsuite_pro.jar burp/pkg/burp.jar
+cp /path/to/new/burpsuite.jar burp/pkg/burp.jar
 ./collaborator down
 ./collaborator up
 ```

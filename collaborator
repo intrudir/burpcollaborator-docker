@@ -188,7 +188,7 @@ up() {
     if [ -s burp/pkg/burp.jar ]; then
         jar=burp/pkg/burp.jar
     else
-        jar=$(prompt_value burp-jar "Path to your Burp Suite Professional JAR" "${3:-}")
+        jar=$(prompt_value burp-jar "Path to your Burp Suite JAR" "${3:-}")
         if [ ! -f "$jar" ]; then
             echo "ERROR: Burp JAR not found at '$jar'." >&2
             exit 1
