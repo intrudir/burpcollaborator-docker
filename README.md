@@ -1,164 +1,247 @@
-# Burp Collaborator Server docker container with LetsEncrypt certificate
+# Burp Collaborator Server with Docker and Let's Encrypt
 
-This repository includes a set of scripts to install a Burp Collaborator Server in a docker environment, using a LetsEncrypt wildcard certificate.
-The objective is to simplify as much as possible the process of setting up and maintaining the server.
+Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificate. One command performs first-time setup and starts the server; one command shuts it down.
 
-## Setup your domain
-Delegate a domain or subdomain to your soon-to-be burp collaborator server IP address. At the minimum you'll need an NS record for the domain/subdomain to be used.  
+## What you need
 
-For example, if your collaborator domain is `burpserver.example`, you need to make NS records pointing with an A record to the public IP of the server: `1.2.3.4`
+- A Linux server with a public IPv4 address
+- Bash and a working Docker installation
+- A domain or subdomain delegated to the server
+- A licensed Burp Suite Professional JAR
+- Internet access to ports used by Collaborator
 
-Here as an example `dig` command to confirm:
-```bash
-dig NS burpserver.example
+No host installation of Java, Certbot, `jq`, `openssl`, or `bc` is required.
 
-Output:
-; <<>> DiG 9.10.6 <<>> NS burpserver.example
-;; global options: +cmd
-;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 49449
-;; flags: qr rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 3
+## 1. Delegate a domain
 
-;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 4000
-;; QUESTION SECTION:
-;burpserver.example.                       IN      NS
+Choose a dedicated domain such as `collab.example.com`. Create an address record for its nameserver and delegate the Collaborator domain to it:
 
-;; ANSWER SECTION:
-burpserver.example.                308     IN      NS      ns2.burpserver.example.
-burpserver.example.                308     IN      NS      ns1.burpserver.example.
-
-;; ADDITIONAL SECTION:
-ns2.burpserver.example.            308     IN      A       1.2.3.4
-ns1.burpserver.example.            308     IN      A       1.2.3.4
-
-;; Query time: 52 msec
-;; SERVER: 8.8.8.8#53(8.8.8.8)
-;; WHEN: Fri Jul 12 11:20:29 EDT 2024
-;; MSG SIZE  rcvd: 104
+```text
+ns1.collab.example.com.  A   1.2.3.4
+collab.example.com.      NS  ns1.collab.example.com.
 ```
 
-Check https://portswigger.net/burp/documentation/collaborator/deploying#dns-configuration for further info.
+Replace `1.2.3.4` with the server's public IPv4 address. If the nameserver is inside the delegated domain, your registrar or parent DNS provider may call the address record a glue record.
 
-## Requirements
+Confirm the delegation before starting setup:
 
-* Internet accessible server
-* bash
-* docker
-* bc
-* jq
-* openssl
-* Burp Suite Professional
+```bash
+dig NS collab.example.com
+dig A ns1.collab.example.com
+```
 
-## Setup the environment 
+Both TCP and UDP port 53 must reach this server. DNS delegation is required because the setup uses Burp Collaborator's DNS server to complete the Let's Encrypt DNS-01 challenge.
 
-* Clone or download the repository to the server to a directory of your choice.
-* Put the Burp Suite JAR file in ```./burp/pkg/burp.jar``` (make sure the name is exactly ```burp.jar```, and it is the actual file **not a link**)
-* Run init.sh with your subdomain and server public IP address as argument:
+See [PortSwigger's DNS configuration documentation](https://portswigger.net/burp/documentation/collaborator/deploying#dns-configuration) for additional background.
 
-```./init.sh burp.example.com 1.2.3.4```
+## 2. Start Collaborator
 
-This will start the environment for the subdomain ```burp.example.com```, creating a wildcard certificate as ```*.burp.example.com```.
+Clone the repository, enter it, and run the wizard:
 
-During certificate issuance, Burp Collaborator's built-in DNS server is used to serve the ACME DNS-01 challenge records. Certbot runs with manual hooks that inject the challenge TXT records into Burp's configuration and restart it as needed.
+```bash
+git clone https://github.com/intrudir/burpcollaborator-docker.git
+cd burpcollaborator-docker
+./collaborator up
+```
 
-If everything is OK, burp will start with the following message:
+On first use, the wizard asks for:
 
-> Burp is now running with the letsencrypt certificate for domain *.burp.example.com
+- The delegated domain, such as `collab.example.com`
+- The server's public IPv4 address
+- The path to your Burp Suite Professional JAR
 
-You can check by running ```docker ps```, and going to burp, and pointing the collaborator configuration to your new server. 
-Keep it mind that this configuration configures the *polling server on port 9443*.
+The command copies the JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. Later invocations simply start the existing installation.
 
-The init.sh script produces a flag file to mark that it has already been run which prevents the script from re-executing and overwriting data, ensuring no accidents happen.
+### Use CLI flags
+
+For unattended setup, provide named flags:
+
+```bash
+./collaborator up \
+  --domain collab.example.com \
+  --ip 1.2.3.4 \
+  --jar /path/to/burpsuite_pro.jar
+```
+
+The positional form remains available:
+
+```bash
+./collaborator up collab.example.com 1.2.3.4 /path/to/burpsuite_pro.jar
+```
+
+### Use a config file
+
+Copy the example and edit it:
+
+```bash
+cp collaborator.conf.example collaborator.conf
+```
+
+```ini
+domain=collab.example.com
+public_ip=1.2.3.4
+burp_jar=/path/to/burpsuite_pro.jar
+```
+
+Then start the deployment:
+
+```bash
+./collaborator up --config collaborator.conf
+```
+
+Relative JAR paths are resolved from the config file's directory. During first-time setup, named flags override config-file values, which makes one-off overrides possible:
+
+```bash
+./collaborator up --config collaborator.conf --ip 5.6.7.8
+```
+
+`collaborator.conf` is ignored by Git.
+
+## Lifecycle commands
+
+Start or create the deployment:
+
+```bash
+./collaborator up
+```
+
+Stop it while preserving the JAR, configuration, and certificates:
+
+```bash
+./collaborator down
+```
+
+Check its state:
+
+```bash
+./collaborator status
+```
+
+Follow the Burp container logs:
+
+```bash
+./collaborator logs
+```
+
+Check for certificate renewal:
+
+```bash
+./collaborator renew
+```
+
+Display command help:
+
+```bash
+./collaborator --help
+```
 
 ## Certificate renewal
 
-* There's a renewal script in ```./certbot/certificaterenewal.sh```. When run, it renews the certificate if it expires in 30 days or less. The domain is read automatically from ```burp.config```;
-* Optionally, edit the RENEWDAYS variable if you wish to. *If you want to force the renewal to check if everything is working, just set it to 89 days, and run it manually. Remember to set it back to 30 afterwards.*;
-* Set your crontab to run this script once a day.
+`./collaborator renew` asks Certbot to renew certificates that are close to expiry. When renewal occurs, the new files are installed and Burp is restarted automatically. If nothing is due, Burp is left untouched.
 
-## Updating Burp Suite
+For unattended renewal, run the command daily from cron:
 
-* Download it and make sure you put it in ```./burp/pkg/burp.jar```
-* Restart the container with ```docker restart burp```
-
-## Docker and UFW
-If you use UFW/IPTables as your firewall on the host, both UFW and docker modify the same [iptables](https://en.wikipedia.org/wiki/Iptables "iptables") configurations. Whatever UFW rules you have set, running a docker container completely ignores them and allows traffic, regardless of whether you explicitly block access. In order to fix the issue and be able to use UFW properly with docker, read this: 
-
-https://blog.jarrousse.org/2023/03/18/how-to-use-ufw-firewall-with-docker-containers/
-
-These instructions assume you have the default docker set up and didn't try to fix the problem yourself yet.
-**Download `ufw-docker` script**
-```bash
-sudo wget -O /usr/local/bin/ufw-docker https://github.com/chaifeng/ufw-docker/raw/master/ufw-docker
-sudo chmod +x /usr/local/bin/ufw-docker
+```cron
+17 3 * * * cd /absolute/path/to/burpcollaborator-docker && ./collaborator renew >> certbot/logs/cron.log 2>&1
 ```
 
-Then using the following command to modify the `after.rules` file of `ufw`
-```bash
-ufw-docker install
-```
+## Ports
 
-reboot the host and check if you can access the ports of your container.
+The container publishes these host ports:
 
-Now allow the traffic to the ports on the containers
-- Use the actual port thats open on the container, not the one its binded to on the host
-- `burp` is the container name, so thats what we use with below command
-```bash
-docker ps -a
-sudo ufw-docker allow burp 8443
-```
-<img width="1718" alt="Pasted image 20240713201717" src="https://github.com/user-attachments/assets/be02f47e-5088-4d55-a5fa-ae3e9b137430">
+| Host port | Protocol | Purpose |
+| --- | --- | --- |
+| 53 | TCP/UDP | Authoritative DNS and interaction capture |
+| 80 | TCP | HTTP interaction capture |
+| 443 | TCP | HTTPS interaction capture |
+| 25 | TCP | SMTP interaction capture |
+| 465 | TCP | SMTPS interaction capture |
+| 587 | TCP | SMTP submission interaction capture |
+| 9090 | TCP | HTTP polling and metrics path |
+| 9443 | TCP | HTTPS polling |
 
-I have provided the commands conventiently for you here:
-```bash
-sudo ufw-docker allow burp 8053
-sudo ufw-docker allow burp 8053/udp
-sudo ufw-docker allow burp 8080
-sudo ufw-docker allow burp 8443
-sudo ufw-docker allow burp 8465
-sudo ufw-docker allow burp 8587
-sudo ufw-docker allow burp 8080
-```
+Docker-published ports can bypass ordinary UFW expectations. Review the host's Docker/UFW forwarding policy and expose only what you need. In particular, restrict polling ports to the IP addresses that should be allowed to use your private Collaborator instance.
 
-I HIGHLY recommend restricting access to your polling port from an IP address or network. Don't allow the general internet to use your burp collab server for free!
-- `your_whitelisted_ip` is your public IP to allow access from
-- `your_containers_local_ip` is 172.x.x.x
+## Configure Burp Suite
+
+In Burp Suite Professional, open the Collaborator server settings and use your delegated domain. This project exposes secure polling on port `9443`.
+
+The generated server configuration is stored at `burp/conf/burp.config`. The randomly generated metrics path is printed after first-time setup.
+
+## Update Burp Suite
+
+Replace the stored JAR and restart the deployment:
 
 ```bash
-ufw route allow proto tcp from your_whitelisted_ip to your_containers_local_ip port 9443
+cp /path/to/new/burpsuite_pro.jar burp/pkg/burp.jar
+./collaborator down
+./collaborator up
 ```
 
-You should be good to go and have your UFW locked down!
+## Start over completely
 
-## Returning static web content
+`./collaborator down` preserves deployment data. To repeat first-time setup, stop the containers and remove the generated state:
 
-Sometimes you might want to return some static HTML content when someone navigates to your instance IP or domain. For example, you may want to return some kind of notice if someone sees your IP in audit logs and tries to investigate what it is or who it's coming from.
-
-You can configure Burp to return static HTML content by adding this section in your `./burp/conf/burp.config` file:
-
+```bash
+./collaborator down
+rm -f burp/conf/burp.config burp/keys/*.pem burp/pkg/burp.jar
+rm -rf certbot/letsencrypt/* certbot/logs/*
+./collaborator up
 ```
+
+This permanently removes the current private key, certificates, Certbot account data, logs, and copied Burp JAR. Keep backups if any of them are needed.
+
+## Troubleshooting
+
+### Docker is unavailable
+
+If the command reports that it cannot access Docker, verify that the daemon is running and that the current user can run `docker info` without `sudo`.
+
+### Port 53 is already in use
+
+Local resolvers such as `systemd-resolved` commonly bind port 53. Identify the process before changing the host:
+
+```bash
+sudo ss -lntup '( sport = :53 )'
+```
+
+The Collaborator container cannot start until both TCP and UDP port 53 are available.
+
+### Certificate issuance fails
+
+Verify all of the following:
+
+- The domain's NS record is visible from a public resolver.
+- The nameserver address resolves to this server's public IP.
+- Inbound TCP and UDP port 53 are permitted by the cloud firewall and host firewall.
+- No other process or container is using port 53.
+- The domain and public IP passed to the setup command are correct.
+
+After correcting the problem, run `./collaborator up` again. Failed first-time setup removes its temporary container and can be retried.
+
+## Return static web content
+
+Burp can return custom HTML when someone visits the instance. Add a `customHttpContent` section to `burp/conf/burp.config`:
+
+```json
 {
-    ...
-
-    "customHttpContent": [
-        {
-            "path": "/",
-            "contentType": "text/html",
-            "base64Content": "<insert base64 encoded HTML>"
-        }
-    ],
-
-    ...
-
+  "customHttpContent": [
+    {
+      "path": "/",
+      "contentType": "text/html",
+      "base64Content": "<base64-encoded HTML>"
+    }
+  ]
 }
 ```
 
-You'll need to write raw HTML that can be rendered by a browser, then base64 encode the contents and insert it in the `base64Content` field above.
+Restart the deployment after editing the configuration:
 
----
-**Author:** [Bruno Morisson](https://twitter.com/morisson)
+```bash
+./collaborator down
+./collaborator up
+```
 
-Thanks to [Fábio Pires](https://twitter.com/fabiopirespt) (check his burp collaborator w/letsencrypt [tutorial](https://blog.fabiopires.pt/running-your-instance-of-burp-collaborator-server/)) and [Herman Duarte](https://twitter.com/hdontwit) (for betatesting and fixes)
+## Credits
 
-
+Created by [Bruno Morisson](https://twitter.com/morisson), with thanks to [Fábio Pires](https://twitter.com/fabiopirespt) and [Herman Duarte](https://twitter.com/hdontwit).
