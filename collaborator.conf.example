@@ -2,3 +2,12 @@
 domain=collab.example.com
 public_ip=1.2.3.4
 burp_jar=/path/to/burpsuite.jar
+
+# Use "letsencrypt" for automatic issuance, or "files" for another CA.
+certificate_source=letsencrypt
+
+# Required only when certificate_source=files:
+# certificate_file=/path/to/certificate.pem
+# private_key_file=/path/to/private-key.pem
+# chain_file=/path/to/ca-chain.pem
+# Alternatively, use fullchain_file instead of chain_file.

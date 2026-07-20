@@ -11,7 +11,7 @@ usage() {
 Usage:
   ./collaborator up
   ./collaborator up --config FILE
-  ./collaborator up --domain DOMAIN --ip ADDRESS --jar FILE
+  ./collaborator up --domain DOMAIN --ip ADDRESS --jar FILE [certificate options]
   ./collaborator up [domain] [public-ip] [burp-jar]
   ./collaborator down
   ./collaborator status
@@ -20,6 +20,10 @@ Usage:
 
 Run `./collaborator up` with no arguments for guided first-time setup.
 CLI flags override values loaded from a config file.
+
+Certificate options:
+  --certificate-source letsencrypt|files
+  --cert FILE --key FILE (--chain FILE | --fullchain FILE)
 EOF
 }
 
@@ -100,6 +104,11 @@ load_config() {
             domain) CONFIG_DOMAIN=$value ;;
             public_ip) CONFIG_IP=$value ;;
             burp_jar) CONFIG_JAR=$value ;;
+            certificate_source) CONFIG_CERT_SOURCE=$value ;;
+            certificate_file) CONFIG_CERT=$value ;;
+            private_key_file) CONFIG_KEY=$value ;;
+            chain_file) CONFIG_CHAIN=$value ;;
+            fullchain_file) CONFIG_FULLCHAIN=$value ;;
             *)
                 echo "ERROR: Unknown config key '$key' at $file:$line_number." >&2
                 exit 1
@@ -109,12 +118,17 @@ load_config() {
 }
 
 up_command() {
-    local config_file= arg domain= ip= jar=
+    local config_file= arg domain= ip= jar= cert_source= cert= key= chain= fullchain=
     local -a positional=()
     local -a args=("$@")
     CONFIG_DOMAIN=
     CONFIG_IP=
     CONFIG_JAR=
+    CONFIG_CERT_SOURCE=
+    CONFIG_CERT=
+    CONFIG_KEY=
+    CONFIG_CHAIN=
+    CONFIG_FULLCHAIN=
 
     # Locate the config first so named flags override it regardless of order.
     while [ $# -gt 0 ]; do
@@ -131,9 +145,13 @@ up_command() {
 
     if [ -n "$config_file" ]; then
         load_config "$config_file"
-        if [ -n "$CONFIG_JAR" ] && [[ "$CONFIG_JAR" != /* ]]; then
-            CONFIG_JAR=$(cd "$(dirname "$config_file")" && pwd)/$CONFIG_JAR
-        fi
+        local config_dir
+        config_dir=$(cd "$(dirname "$config_file")" && pwd)
+        [ -z "$CONFIG_JAR" ] || [[ "$CONFIG_JAR" = /* ]] || CONFIG_JAR=$config_dir/$CONFIG_JAR
+        [ -z "$CONFIG_CERT" ] || [[ "$CONFIG_CERT" = /* ]] || CONFIG_CERT=$config_dir/$CONFIG_CERT
+        [ -z "$CONFIG_KEY" ] || [[ "$CONFIG_KEY" = /* ]] || CONFIG_KEY=$config_dir/$CONFIG_KEY
+        [ -z "$CONFIG_CHAIN" ] || [[ "$CONFIG_CHAIN" = /* ]] || CONFIG_CHAIN=$config_dir/$CONFIG_CHAIN
+        [ -z "$CONFIG_FULLCHAIN" ] || [[ "$CONFIG_FULLCHAIN" = /* ]] || CONFIG_FULLCHAIN=$config_dir/$CONFIG_FULLCHAIN
     fi
 
     set -- "${args[@]}"
@@ -148,6 +166,16 @@ up_command() {
             --ip=*) ip=${arg#*=}; shift ;;
             --jar) [ $# -ge 2 ] || { echo "ERROR: --jar requires a file." >&2; exit 1; }; jar=$2; shift 2 ;;
             --jar=*) jar=${arg#*=}; shift ;;
+            --certificate-source) [ $# -ge 2 ] || { echo "ERROR: --certificate-source requires a value." >&2; exit 1; }; cert_source=$2; shift 2 ;;
+            --certificate-source=*) cert_source=${arg#*=}; shift ;;
+            --cert) [ $# -ge 2 ] || { echo "ERROR: --cert requires a file." >&2; exit 1; }; cert=$2; shift 2 ;;
+            --cert=*) cert=${arg#*=}; shift ;;
+            --key) [ $# -ge 2 ] || { echo "ERROR: --key requires a file." >&2; exit 1; }; key=$2; shift 2 ;;
+            --key=*) key=${arg#*=}; shift ;;
+            --chain) [ $# -ge 2 ] || { echo "ERROR: --chain requires a file." >&2; exit 1; }; chain=$2; shift 2 ;;
+            --chain=*) chain=${arg#*=}; shift ;;
+            --fullchain) [ $# -ge 2 ] || { echo "ERROR: --fullchain requires a file." >&2; exit 1; }; fullchain=$2; shift 2 ;;
+            --fullchain=*) fullchain=${arg#*=}; shift ;;
             -h|--help) usage; return ;;
             --*) echo "ERROR: Unknown option '$arg'." >&2; exit 1 ;;
             *) positional+=("$arg"); shift ;;
@@ -161,16 +189,64 @@ up_command() {
     domain=${domain:-${CONFIG_DOMAIN:-${positional[0]:-}}}
     ip=${ip:-${CONFIG_IP:-${positional[1]:-}}}
     jar=${jar:-${CONFIG_JAR:-${positional[2]:-}}}
-    up "$domain" "$ip" "$jar"
+    cert_source=${cert_source:-${CONFIG_CERT_SOURCE:-}}
+    cert=${cert:-${CONFIG_CERT:-}}
+    key=${key:-${CONFIG_KEY:-}}
+    chain=${chain:-${CONFIG_CHAIN:-}}
+    fullchain=${fullchain:-${CONFIG_FULLCHAIN:-}}
+    up "$domain" "$ip" "$jar" "$cert" "$key" "$chain" "$fullchain" "$cert_source"
 }
 
 up() {
+    local domain ip jar cert key chain fullchain cert_source file
+    cert=${4:-}
+    key=${5:-}
+    chain=${6:-}
+    fullchain=${7:-}
+    cert_source=${8:-}
+    if [ -z "$cert_source" ] && { [ -n "$cert" ] || [ -n "$key" ] || [ -n "$chain" ] || [ -n "$fullchain" ]; }; then
+        cert_source=files
+    fi
+
     require_docker
 
     if configured; then
         ensure_images
+        if [ "$cert_source" = files ]; then
+            [ -n "$cert" ] && [ -n "$key" ] && { [ -n "$chain" ] || [ -n "$fullchain" ]; } || {
+                echo "ERROR: Updating a supplied certificate requires --cert, --key, and --chain or --fullchain." >&2
+                exit 1
+            }
+            for file in "$cert" "$key" ${chain:+"$chain"} ${fullchain:+"$fullchain"}; do
+                [ -f "$file" ] || { echo "ERROR: Certificate file not found at '$file'." >&2; exit 1; }
+            done
+            cp -L "$cert" burp/keys/cert.pem
+            cp -L "$key" burp/keys/privkey.pem
+            if [ -n "$chain" ]; then
+                cp -L "$chain" burp/keys/chain.pem
+            else
+                cp -L "$fullchain" burp/keys/chain.pem
+            fi
+            if [ -n "$fullchain" ]; then
+                cp -L "$fullchain" burp/keys/fullchain.pem
+            else
+                awk '1' "$cert" "$chain" > burp/keys/fullchain.pem
+            fi
+            docker run --rm --entrypoint chown \
+                -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+            printf '%s\n' files > burp/keys/certificate-source
+            echo "Supplied certificate files installed."
+        elif [ -n "$cert_source" ] && [ "$cert_source" != letsencrypt ]; then
+            echo "ERROR: certificate source must be 'letsencrypt' or 'files'." >&2
+            exit 1
+        fi
         if docker ps --format '{{.Names}}' | grep -qx burp; then
-            echo "Burp Collaborator is already running."
+            if [ "$cert_source" = files ]; then
+                docker restart burp >/dev/null
+                echo "Burp Collaborator restarted with the supplied certificate."
+            else
+                echo "Burp Collaborator is already running."
+            fi
         elif docker ps -a --format '{{.Names}}' | grep -qx burp; then
             docker start burp >/dev/null
             echo "Burp Collaborator started."
@@ -181,9 +257,39 @@ up() {
         return
     fi
 
-    local domain ip jar
     domain=$(prompt_value domain "Collaborator domain (for example collab.example.com)" "${1:-}")
     ip=$(prompt_value public-ip "Public IPv4 address of this server" "${2:-}")
+
+    if [ -z "$cert_source" ] && [ -t 0 ]; then
+        read -r -p "Certificate source [letsencrypt/files] (default: letsencrypt): " cert_source
+    fi
+    cert_source=${cert_source:-letsencrypt}
+
+    case $cert_source in
+        letsencrypt)
+            if [ -n "$cert$key$chain$fullchain" ]; then
+                echo "ERROR: Certificate files cannot be used with certificate_source=letsencrypt." >&2
+                exit 1
+            fi
+            ;;
+        files)
+            cert=$(prompt_value certificate "Leaf certificate PEM file" "$cert")
+            key=$(prompt_value private-key "Private key PEM file" "$key")
+            if [ -z "$chain" ] && [ -z "$fullchain" ]; then
+                chain=$(prompt_value chain "CA chain/bundle PEM file" "")
+            fi
+            for file in "$cert" "$key" ${chain:+"$chain"} ${fullchain:+"$fullchain"}; do
+                if [ ! -f "$file" ]; then
+                    echo "ERROR: Certificate file not found at '$file'." >&2
+                    exit 1
+                fi
+            done
+            ;;
+        *)
+            echo "ERROR: certificate source must be 'letsencrypt' or 'files'." >&2
+            exit 1
+            ;;
+    esac
 
     if [ -s burp/pkg/burp.jar ]; then
         jar=burp/pkg/burp.jar
@@ -196,7 +302,12 @@ up() {
         cp "$jar" burp/pkg/burp.jar
     fi
 
-    ./init.sh "$domain" "$ip"
+    COLLAB_CERT_SOURCE=$cert_source \
+    COLLAB_CERT_FILE=$cert \
+    COLLAB_KEY_FILE=$key \
+    COLLAB_CHAIN_FILE=$chain \
+    COLLAB_FULLCHAIN_FILE=$fullchain \
+        ./init.sh "$domain" "$ip"
 }
 
 down() {
@@ -235,6 +346,11 @@ case ${1:-} in
         ;;
     renew)
         require_docker
+        if [ -f burp/keys/certificate-source ] && [ "$(< burp/keys/certificate-source)" = files ]; then
+            echo "This deployment uses supplied certificate files; automatic Let's Encrypt renewal is disabled."
+            echo "Install renewed files with the same certificate options used during setup."
+            exit 0
+        fi
         ensure_images
         exec ./certbot/certificaterenewal.sh
         ;;

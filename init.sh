@@ -103,6 +103,34 @@ docker run --rm --entrypoint jq \
     .metrics.path = $metrics
 ' /conf/burp.config.template > ./burp/conf/burp.config
 
+if [ "${COLLAB_CERT_SOURCE:-letsencrypt}" = "files" ]; then
+    echo "Installing supplied certificate files..."
+    /bin/cp -L "$COLLAB_CERT_FILE" ./burp/keys/cert.pem
+    /bin/cp -L "$COLLAB_KEY_FILE" ./burp/keys/privkey.pem
+
+    if [ -n "${COLLAB_CHAIN_FILE:-}" ]; then
+        /bin/cp -L "$COLLAB_CHAIN_FILE" ./burp/keys/chain.pem
+    else
+        /bin/cp -L "$COLLAB_FULLCHAIN_FILE" ./burp/keys/chain.pem
+    fi
+
+    if [ -n "${COLLAB_FULLCHAIN_FILE:-}" ]; then
+        /bin/cp -L "$COLLAB_FULLCHAIN_FILE" ./burp/keys/fullchain.pem
+    else
+        awk '1' "$COLLAB_CERT_FILE" "$COLLAB_CHAIN_FILE" > ./burp/keys/fullchain.pem
+    fi
+
+    docker run --rm --entrypoint chown \
+        -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+    printf '%s\n' files > ./burp/keys/certificate-source
+    ./burp/run.sh
+
+    echo
+    echo "SUCCESS! Burp is running with the supplied certificate for *.$DOMAIN"
+    echo "Certificate renewal is managed by the certificate provider or administrator."
+    exit 0
+fi
+
 # Create a DNS-only config for the initial certificate fetch.
 # Burp can't start with certificate paths that don't exist yet,
 # so we strip HTTPS/SMTPS and polling sections entirely.
@@ -133,6 +161,7 @@ BURP_STARTED=1
 # Make the private key readable by the unprivileged Burp container user without sudo.
 docker run --rm --entrypoint chown \
     -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+printf '%s\n' letsencrypt > ./burp/keys/certificate-source
 
 # Restart Burp with the full config and certificates
 docker stop burp && docker rm burp

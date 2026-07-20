@@ -97,6 +97,54 @@ Relative JAR paths are resolved from the config file's directory. During first-t
 
 `collaborator.conf` is ignored by Git.
 
+## Use a certificate from DigiCert or another CA
+
+Let's Encrypt is the default, but it is not required. Supply a PEM-encoded leaf certificate, its private key, and either the CA chain or a complete full-chain file.
+
+With CLI flags and a CA chain:
+
+```bash
+./collaborator up \
+  --domain collab.example.com \
+  --ip 1.2.3.4 \
+  --jar /path/to/burpsuite.jar \
+  --certificate-source files \
+  --cert /path/to/certificate.pem \
+  --key /path/to/private-key.pem \
+  --chain /path/to/ca-chain.pem
+```
+
+If the CA provides a ready-made file containing the leaf certificate and intermediates, use `--fullchain` instead of `--chain`:
+
+```bash
+./collaborator up \
+  --domain collab.example.com \
+  --ip 1.2.3.4 \
+  --jar /path/to/burpsuite.jar \
+  --certificate-source files \
+  --cert /path/to/certificate.pem \
+  --key /path/to/private-key.pem \
+  --fullchain /path/to/fullchain.pem
+```
+
+The equivalent config file entries are:
+
+```ini
+certificate_source=files
+certificate_file=/path/to/certificate.pem
+private_key_file=/path/to/private-key.pem
+chain_file=/path/to/ca-chain.pem
+# Use fullchain_file instead of chain_file when appropriate.
+```
+
+The files are copied into `burp/keys`; the container does not depend on the original paths after setup. Certificate files must be PEM encoded, the private key must match the certificate, and the certificate must cover the configured Collaborator domain and its required subdomains.
+
+To install renewed or replacement files later, run `up` again with the file options or the same config file. If Burp is running, it is restarted with the new certificate automatically:
+
+```bash
+./collaborator up --config collaborator.conf
+```
+
 ## Lifecycle commands
 
 Start or create the deployment:
@@ -137,7 +185,9 @@ Display command help:
 
 ## Certificate renewal
 
-`./collaborator renew` asks Certbot to renew certificates that are close to expiry. When renewal occurs, the new files are installed and Burp is restarted automatically. If nothing is due, Burp is left untouched.
+For Let's Encrypt deployments, `./collaborator renew` asks Certbot to renew certificates that are close to expiry. When renewal occurs, the new files are installed and Burp is restarted automatically. If nothing is due, Burp is left untouched.
+
+For supplied certificates, renewal remains the responsibility of the CA or administrator. Install replacements by running `./collaborator up` with `certificate_source=files`; `./collaborator renew` will report that automatic Let's Encrypt renewal is disabled.
 
 For unattended renewal, run the command daily from cron:
 
