@@ -2,14 +2,20 @@
 
 set -e
 
+BURP_STARTED=0
+
 # Cleanup handler for errors
 cleanup() {
+    status=$?
     echo "An error occurred during the execution of the script. Please check the output for details."
+    if [ "$BURP_STARTED" -eq 1 ]; then
+        docker rm -f burp >/dev/null 2>&1 || true
+    fi
     [ -f ./burp/conf/burp.config.full ] && /bin/mv ./burp/conf/burp.config.full ./burp/conf/burp.config
     [ -f ./burp/conf/burp.config.dnsonly ] && /bin/rm -f ./burp/conf/burp.config.dnsonly
-    exit 1
+    exit "$status"
 }
-trap cleanup ERR
+trap cleanup ERR INT TERM
 
 # Check if a file exists
 check_file() {
@@ -33,41 +39,36 @@ check_command() {
     fi
 }
 
-handle_docker_permission_error() {
-    echo "ERROR: Permission denied while trying to connect to the Docker daemon. Your user likely needs to use 'sudo' with docker, but we can add your user to the docker group and it should fix this."
-    read -p "Would you like to add your user to the Docker group to fix this? (y/n): " choice
-    if [ "$choice" = "y" ]; then
-        sudo usermod -aG docker $USER
-        echo "User added to the Docker group. Please log out and back in for the changes to take effect, then try the init script again."
-    else
-        echo "Exiting script. Please fix the Docker permissions manually."
-    fi
-    exit 1
-}
-
-if [ -e ./init.sh_has_been_run ]; then
-    echo "Script has already been run. Bailing out."
-    exit 0
-fi
-
-if [ -e ./.init_has_been_run ]; then
-    echo "Script has already been run. Bailing out."
-    exit 0
-fi
-
 check_file "burp.jar"
 check_command "docker"
-check_command "bc"
-check_command "jq"
-check_command "openssl"
+check_command "awk"
 
 if [ $# -ne 2 ]; then
     echo "Usage: ./init.sh <domain> <ip>"
     exit 1
 fi
 
+DOMAIN=$1
+IP=$2
+
+if [[ ! "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+    echo "ERROR: '$DOMAIN' is not a valid DNS domain name."
+    exit 1
+fi
+
+if ! awk -v ip="$IP" 'BEGIN {
+    n = split(ip, octets, ".")
+    if (n != 4) exit 1
+    for (i = 1; i <= 4; i++) {
+        if (octets[i] !~ /^[0-9]+$/ || octets[i] < 0 || octets[i] > 255) exit 1
+    }
+}' </dev/null; then
+    echo "ERROR: '$IP' is not a valid IPv4 address."
+    exit 1
+fi
+
 # Check if port 53 is available
-if ss -lntu | grep -q ':53 '; then
+if command -v ss >/dev/null 2>&1 && ss -lntu | grep -q ':53 '; then
     echo "ERROR: Port 53 is already in use. This is commonly caused by systemd-resolved."
     echo "To free port 53, you can run:"
     echo "  sudo systemctl stop systemd-resolved"
@@ -76,36 +77,45 @@ if ss -lntu | grep -q ':53 '; then
     exit 1
 fi
 
-DOMAIN=$1
-IP=$2
 METRICS=$(LC_CTYPE=C tr -dc A-Za-z0-9 < /dev/urandom | fold -w 10 | head -1)
 
 echo "Initialization to be done with domain *.$1 and public IP $2"
-read -p "Press any key to continue, or CTRL-C to bail out" var_p
 
 # check if docker works
-docker container ls || handle_docker_permission_error
+if ! docker container ls >/dev/null; then
+    echo "ERROR: Unable to access the Docker daemon." >&2
+    exit 1
+fi
 
 # build the containers
 docker build -t certbot-burp certbot
 docker build -t burp burp
 
-# Create full burp.config from template
-/bin/cp ./burp/conf/burp.config.template ./burp/conf/burp.config
-/bin/sed -i "s/DOMAIN/$DOMAIN/g" ./burp/conf/burp.config
-/bin/sed -i "s/IP/$IP/g" ./burp/conf/burp.config
-/bin/sed -i "s/jnaicmez8/$METRICS/g" ./burp/conf/burp.config
+# Create full burp.config from template without interpolating values as JSON.
+docker run --rm --entrypoint jq \
+    -v "$PWD/burp/conf:/conf:ro" certbot-burp \
+    --arg domain "$DOMAIN" --arg ip "$IP" --arg metrics "$METRICS" '
+    .serverDomain = $domain |
+    .eventCapture.publicAddress = [$ip] |
+    .polling.http.publicAddress = [$ip] |
+    .polling.https.publicAddress = [$ip] |
+    .dns.interfaces[].publicAddress = [$ip] |
+    .metrics.path = $metrics
+' /conf/burp.config.template > ./burp/conf/burp.config
 
 # Create a DNS-only config for the initial certificate fetch.
 # Burp can't start with certificate paths that don't exist yet,
 # so we strip HTTPS/SMTPS and polling sections entirely.
-jq 'del(.eventCapture.https, .eventCapture.smtps, .polling)' \
-    ./burp/conf/burp.config > ./burp/conf/burp.config.dnsonly
+docker run --rm --entrypoint jq \
+    -v "$PWD/burp/conf:/conf:ro" certbot-burp \
+    'del(.eventCapture.https, .eventCapture.smtps, .polling)' \
+    /conf/burp.config > ./burp/conf/burp.config.dnsonly
 /bin/cp ./burp/conf/burp.config ./burp/conf/burp.config.full
 /bin/mv ./burp/conf/burp.config.dnsonly ./burp/conf/burp.config
 
 # Start Burp with DNS-only config and minimal port mappings
 ./burp/run-dnsonly.sh
+BURP_STARTED=1
 
 # Get certificates. The auth hook will inject TXT records into burp.config
 # and restart Burp for each challenge.
@@ -120,16 +130,14 @@ jq 'del(.eventCapture.https, .eventCapture.smtps, .polling)' \
 /bin/cp -L ./certbot/letsencrypt/live/$DOMAIN/fullchain.pem ./burp/keys/fullchain.pem
 /bin/cp -L ./certbot/letsencrypt/live/$DOMAIN/privkey.pem ./burp/keys/privkey.pem
 
-# Change ownership of the privkey.pem file to UID 999 and GID 999
-sudo chown 999:999 ./burp/keys/privkey.pem
+# Make the private key readable by the unprivileged Burp container user without sudo.
+docker run --rm --entrypoint chown \
+    -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
 
 # Restart Burp with the full config and certificates
 docker stop burp && docker rm burp
+BURP_STARTED=0
 ./burp/run.sh
-
-# Disable init script from running again
-sudo /bin/mv ./init.sh ./init.sh_has_been_run
-sudo /bin/chmod 000 ./init.sh_has_been_run
 
 echo
 echo "SUCCESS! Burp is now running with the letsencrypt certificate for domain *.$DOMAIN"

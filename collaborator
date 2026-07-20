@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+shopt -s extglob
+
+BASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$BASE_DIR"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./collaborator up
+  ./collaborator up --config FILE
+  ./collaborator up --domain DOMAIN --ip ADDRESS --jar FILE
+  ./collaborator up [domain] [public-ip] [burp-jar]
+  ./collaborator down
+  ./collaborator status
+  ./collaborator logs
+  ./collaborator renew
+
+Run `./collaborator up` with no arguments for guided first-time setup.
+CLI flags override values loaded from a config file.
+EOF
+}
+
+require_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "ERROR: Docker is required. Install Docker, then run this command again." >&2
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "ERROR: Docker is installed, but this user cannot access the Docker daemon." >&2
+        echo "Start Docker or add your user to the docker group, then try again." >&2
+        exit 1
+    fi
+}
+
+configured() {
+    [ -s burp/conf/burp.config ] &&
+        [ -s burp/pkg/burp.jar ] &&
+        [ -s burp/keys/privkey.pem ]
+}
+
+ensure_images() {
+    if ! docker image inspect certbot-burp >/dev/null 2>&1; then
+        docker build -t certbot-burp certbot
+    fi
+    if ! docker image inspect burp >/dev/null 2>&1; then
+        docker build -t burp burp
+    fi
+}
+
+prompt_value() {
+    local name=$1
+    local prompt=$2
+    local value=${3:-}
+
+    if [ -z "$value" ]; then
+        if [ ! -t 0 ]; then
+            echo "ERROR: Missing $name. Pass it on the command line." >&2
+            exit 1
+        fi
+        read -r -p "$prompt: " value
+    fi
+    if [ -z "$value" ]; then
+        echo "ERROR: $name cannot be empty." >&2
+        exit 1
+    fi
+    printf '%s' "$value"
+}
+
+trim() {
+    local value=$1
+    value=${value##+([[:space:]])}
+    value=${value%%+([[:space:]])}
+    printf '%s' "$value"
+}
+
+load_config() {
+    local file=$1 line key value line_number=0
+
+    if [ ! -f "$file" ]; then
+        echo "ERROR: Config file not found at '$file'." >&2
+        exit 1
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line_number=$((line_number + 1))
+        line=${line%$'\r'}
+        line=$(trim "$line")
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+        if [[ "$line" != *=* ]]; then
+            echo "ERROR: Invalid config entry at $file:$line_number; expected key=value." >&2
+            exit 1
+        fi
+        key=$(trim "${line%%=*}")
+        value=$(trim "${line#*=}")
+        case $key in
+            domain) CONFIG_DOMAIN=$value ;;
+            public_ip) CONFIG_IP=$value ;;
+            burp_jar) CONFIG_JAR=$value ;;
+            *)
+                echo "ERROR: Unknown config key '$key' at $file:$line_number." >&2
+                exit 1
+                ;;
+        esac
+    done < "$file"
+}
+
+up_command() {
+    local config_file= arg domain= ip= jar=
+    local -a positional=()
+    local -a args=("$@")
+    CONFIG_DOMAIN=
+    CONFIG_IP=
+    CONFIG_JAR=
+
+    # Locate the config first so named flags override it regardless of order.
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --config)
+                [ $# -ge 2 ] || { echo "ERROR: --config requires a file." >&2; exit 1; }
+                config_file=$2
+                shift 2
+                ;;
+            --config=*) config_file=${1#*=}; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ -n "$config_file" ]; then
+        load_config "$config_file"
+        if [ -n "$CONFIG_JAR" ] && [[ "$CONFIG_JAR" != /* ]]; then
+            CONFIG_JAR=$(cd "$(dirname "$config_file")" && pwd)/$CONFIG_JAR
+        fi
+    fi
+
+    set -- "${args[@]}"
+    while [ $# -gt 0 ]; do
+        arg=$1
+        case $arg in
+            --config) shift 2 ;;
+            --config=*) shift ;;
+            --domain) [ $# -ge 2 ] || { echo "ERROR: --domain requires a value." >&2; exit 1; }; domain=$2; shift 2 ;;
+            --domain=*) domain=${arg#*=}; shift ;;
+            --ip) [ $# -ge 2 ] || { echo "ERROR: --ip requires a value." >&2; exit 1; }; ip=$2; shift 2 ;;
+            --ip=*) ip=${arg#*=}; shift ;;
+            --jar) [ $# -ge 2 ] || { echo "ERROR: --jar requires a file." >&2; exit 1; }; jar=$2; shift 2 ;;
+            --jar=*) jar=${arg#*=}; shift ;;
+            -h|--help) usage; return ;;
+            --*) echo "ERROR: Unknown option '$arg'." >&2; exit 1 ;;
+            *) positional+=("$arg"); shift ;;
+        esac
+    done
+
+    if [ ${#positional[@]} -gt 3 ]; then
+        echo "ERROR: Too many positional arguments for 'up'." >&2
+        exit 1
+    fi
+    domain=${domain:-${CONFIG_DOMAIN:-${positional[0]:-}}}
+    ip=${ip:-${CONFIG_IP:-${positional[1]:-}}}
+    jar=${jar:-${CONFIG_JAR:-${positional[2]:-}}}
+    up "$domain" "$ip" "$jar"
+}
+
+up() {
+    require_docker
+
+    if configured; then
+        ensure_images
+        if docker ps --format '{{.Names}}' | grep -qx burp; then
+            echo "Burp Collaborator is already running."
+        elif docker ps -a --format '{{.Names}}' | grep -qx burp; then
+            docker start burp >/dev/null
+            echo "Burp Collaborator started."
+        else
+            ./burp/run.sh
+        fi
+        status
+        return
+    fi
+
+    local domain ip jar
+    domain=$(prompt_value domain "Collaborator domain (for example collab.example.com)" "${1:-}")
+    ip=$(prompt_value public-ip "Public IPv4 address of this server" "${2:-}")
+
+    if [ -s burp/pkg/burp.jar ]; then
+        jar=burp/pkg/burp.jar
+    else
+        jar=$(prompt_value burp-jar "Path to your Burp Suite Professional JAR" "${3:-}")
+        if [ ! -f "$jar" ]; then
+            echo "ERROR: Burp JAR not found at '$jar'." >&2
+            exit 1
+        fi
+        cp "$jar" burp/pkg/burp.jar
+    fi
+
+    ./init.sh "$domain" "$ip"
+}
+
+down() {
+    require_docker
+    docker rm -f burp certbot >/dev/null 2>&1 || true
+    echo "Burp Collaborator stopped. Certificates and configuration were preserved."
+}
+
+status() {
+    require_docker
+    if docker ps --format '{{.Names}}' | grep -qx burp; then
+        docker ps --filter name='^/burp$' --format 'Burp Collaborator is running ({{.Status}}).'
+    elif docker ps -a --format '{{.Names}}' | grep -qx burp; then
+        echo "Burp Collaborator is stopped."
+        return 1
+    else
+        echo "Burp Collaborator is not configured or has not been started."
+        return 1
+    fi
+}
+
+case ${1:-} in
+    up)
+        shift
+        up_command "$@"
+        ;;
+    down)
+        down
+        ;;
+    status)
+        status
+        ;;
+    logs)
+        require_docker
+        exec docker logs -f burp
+        ;;
+    renew)
+        require_docker
+        ensure_images
+        exec ./certbot/certificaterenewal.sh
+        ;;
+    help|-h|--help|'')
+        usage
+        ;;
+    *)
+        echo "ERROR: Unknown command '$1'." >&2
+        usage >&2
+        exit 1
+        ;;
+esac
