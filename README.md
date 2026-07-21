@@ -67,7 +67,11 @@ On first use, the wizard asks for:
 - The server's public IPv4 address
 - Whether to download the latest stable Burp Suite JAR or use a local file
 
-The command installs the selected JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. Later invocations simply start the existing installation.
+The command installs the selected JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. It also saves the resolved domain and public IP to `collaborator.conf`. Later invocations simply load that file and start the existing installation:
+
+```bash
+./collaborator up
+```
 
 ### Use CLI flags
 
@@ -80,9 +84,9 @@ For unattended setup, provide named flags:
   --download-jar
 ```
 
-### or use a config file
+### Or use a config file
 
-Copy the example and edit it:
+The wizard creates `collaborator.conf` automatically. To prepare one before the first run, copy the example and edit it:
 
 ```bash
 cp collaborator.conf.example collaborator.conf
@@ -101,13 +105,19 @@ burp_jar_source=file
 burp_jar=/path/to/burpsuite.jar
 ```
 
-Then start the deployment:
+The default file is loaded automatically:
 
 ```bash
-./collaborator up --config collaborator.conf
+./collaborator up
 ```
 
-`collaborator.conf` is ignored by Git.
+Use `--config FILE` only when loading a different config path:
+
+```bash
+./collaborator up --config /path/to/another.conf
+```
+
+CLI flags override config values. `collaborator.conf` is ignored by Git. Generated configs do not contain JAR-download or certificate-replacement directives, so ordinary future `up` commands reuse the managed files.
 
 ## Burp JAR downloads
 
