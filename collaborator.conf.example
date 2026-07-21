@@ -1,6 +1,9 @@
 # Copy this file to collaborator.conf and fill in your deployment values.
 domain=collab.example.com
 public_ip=1.2.3.4
+# Choose "download" to explicitly fetch the latest stable JAR, or "file".
+# Existing managed JARs are never updated unless "download" is requested.
+burp_jar_source=file
 burp_jar=/path/to/burpsuite.jar
 
 # Use "letsencrypt" for automatic issuance, or "files" for another CA.

@@ -9,6 +9,7 @@ Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificat
 - [2. Start Collaborator](#2-start-collaborator)
   - [Use CLI flags](#use-cli-flags)
   - [Or use a config file](#or-use-a-config-file)
+- [Burp JAR downloads](#burp-jar-downloads)
 - [Use a certificate from DigiCert or another CA](#use-a-certificate-from-digicert-or-another-ca)
 - [Command cheatsheet](#command-cheatsheet)
 - [Certificate renewal](#certificate-renewal)
@@ -28,7 +29,7 @@ Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificat
 - A Linux server with a public IPv4 address
 - Bash and a working Docker installation
 - A domain or subdomain delegated to the server
-- A Burp Suite Pro JAR 
+- Permission to download Burp Suite under PortSwigger's terms, or a local Burp Suite JAR
 - Internet access to ports used by Collaborator
 
 ## 1. Delegate a domain
@@ -64,9 +65,9 @@ On first use, the wizard asks for:
 
 - The delegated domain, such as `collab.com`
 - The server's public IPv4 address
-- The path to your Burp Suite JAR
+- Whether to download the latest stable Burp Suite JAR or use a local file
 
-The command copies the JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. Later invocations simply start the existing installation.
+The command installs the selected JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. Later invocations simply start the existing installation.
 
 ### Use CLI flags
 
@@ -76,7 +77,7 @@ For unattended setup, provide named flags:
 ./collaborator up \
   --domain collab.example.com \
   --ip 1.2.3.4 \
-  --jar /path/to/burpsuite.jar
+  --download-jar
 ```
 
 ### or use a config file
@@ -90,6 +91,13 @@ cp collaborator.conf.example collaborator.conf
 ```ini
 domain=collab.com
 public_ip=1.2.3.4
+burp_jar_source=download
+```
+
+To use a local JAR instead:
+
+```ini
+burp_jar_source=file
 burp_jar=/path/to/burpsuite.jar
 ```
 
@@ -100,6 +108,20 @@ Then start the deployment:
 ```
 
 `collaborator.conf` is ignored by Git.
+
+## Burp JAR downloads
+
+JAR downloads are always explicit. If `burp/pkg/burp.jar` already exists, ordinary `./collaborator up` commands reuse it without checking for or downloading updates.
+
+To explicitly download the latest stable JAR directly from PortSwigger:
+
+```bash
+./collaborator up --download-jar
+```
+
+The command displays the [PortSwigger license agreement](https://portswigger.net/burp/eula), obtains the version and SHA-256 checksum from the official [Burp download page](https://portswigger.net/burp/downloads), and verifies the JAR before installing it. A failed download or checksum mismatch leaves the existing JAR untouched.
+
+Use `--jar FILE` to explicitly install a local JAR. `--jar` and `--download-jar` cannot be combined. When an explicitly installed JAR changes, a running Collaborator container is restarted; when the JAR is already identical, it is left running.
 
 ## Use a certificate from DigiCert or another CA
 
@@ -205,13 +227,19 @@ The generated server configuration is stored at `burp/conf/burp.config`. The ran
 
 ## Update Burp Suite
 
-Replace the stored JAR and restart the deployment:
+Explicitly download the latest stable JAR:
 
 ```bash
-cp /path/to/new/burpsuite.jar burp/pkg/burp.jar
-./collaborator down
-./collaborator up
+./collaborator up --download-jar
 ```
+
+Or install a local JAR:
+
+```bash
+./collaborator up --jar /path/to/new/burpsuite.jar
+```
+
+Collaborator never updates its JAR automatically.
 
 ## Start over completely
 

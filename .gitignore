@@ -4,3 +4,4 @@
 /certbot/letsencrypt/*
 /certbot/logs/*
 collaborator.conf
+__pycache__/

@@ -11,7 +11,7 @@ usage() {
 Usage:
   ./collaborator up
   ./collaborator up --config FILE
-  ./collaborator up --domain DOMAIN --ip ADDRESS --jar FILE [certificate options]
+  ./collaborator up --domain DOMAIN --ip ADDRESS [--jar FILE | --download-jar]
   ./collaborator up [domain] [public-ip] [burp-jar]
   ./collaborator down
   ./collaborator status
@@ -24,6 +24,10 @@ CLI flags override values loaded from a config file.
 Certificate options:
   --certificate-source letsencrypt|files
   --cert FILE --key FILE (--chain FILE | --fullchain FILE)
+
+JAR options:
+  --jar FILE       Copy a local JAR into the deployment
+  --download-jar  Explicitly download the latest stable JAR from PortSwigger
 EOF
 }
 
@@ -52,6 +56,36 @@ ensure_images() {
     if ! docker image inspect burp >/dev/null 2>&1; then
         docker build -t burp burp
     fi
+}
+
+download_burp_jar() {
+    echo "Burp downloads are subject to PortSwigger's license terms:"
+    echo "https://portswigger.net/burp/eula"
+    docker build -q -t certbot-burp certbot >/dev/null
+    local output
+    output=$(docker run --rm --entrypoint python3 \
+        -v "$PWD/burp/pkg:/pkg" certbot-burp \
+        /opt/download_burp_jar.py --output /pkg/burp.jar)
+    echo "$output" | sed '/^BURP_JAR_CHANGED=/d'
+    if grep -q '^BURP_JAR_CHANGED=1$' <<< "$output"; then
+        JAR_CHANGED=1
+    else
+        JAR_CHANGED=0
+    fi
+}
+
+install_local_jar() {
+    local source=$1 temporary=burp/pkg/.burp.jar.tmp
+    [ -f "$source" ] || { echo "ERROR: Burp JAR not found at '$source'." >&2; exit 1; }
+    if [ -s burp/pkg/burp.jar ] && cmp -s "$source" burp/pkg/burp.jar; then
+        echo "The supplied Burp JAR is already installed."
+        JAR_CHANGED=0
+        return
+    fi
+    cp "$source" "$temporary"
+    mv "$temporary" burp/pkg/burp.jar
+    JAR_CHANGED=1
+    echo "Burp JAR installed from '$source'."
 }
 
 prompt_value() {
@@ -104,6 +138,7 @@ load_config() {
             domain) CONFIG_DOMAIN=$value ;;
             public_ip) CONFIG_IP=$value ;;
             burp_jar) CONFIG_JAR=$value ;;
+            burp_jar_source) CONFIG_JAR_SOURCE=$value ;;
             certificate_source) CONFIG_CERT_SOURCE=$value ;;
             certificate_file) CONFIG_CERT=$value ;;
             private_key_file) CONFIG_KEY=$value ;;
@@ -118,12 +153,14 @@ load_config() {
 }
 
 up_command() {
-    local config_file= arg domain= ip= jar= cert_source= cert= key= chain= fullchain=
+    local config_file= arg domain= ip= jar= jar_source= cert_source= cert= key= chain= fullchain=
+    local download_jar=0 jar_option=0
     local -a positional=()
     local -a args=("$@")
     CONFIG_DOMAIN=
     CONFIG_IP=
     CONFIG_JAR=
+    CONFIG_JAR_SOURCE=
     CONFIG_CERT_SOURCE=
     CONFIG_CERT=
     CONFIG_KEY=
@@ -164,8 +201,9 @@ up_command() {
             --domain=*) domain=${arg#*=}; shift ;;
             --ip) [ $# -ge 2 ] || { echo "ERROR: --ip requires a value." >&2; exit 1; }; ip=$2; shift 2 ;;
             --ip=*) ip=${arg#*=}; shift ;;
-            --jar) [ $# -ge 2 ] || { echo "ERROR: --jar requires a file." >&2; exit 1; }; jar=$2; shift 2 ;;
-            --jar=*) jar=${arg#*=}; shift ;;
+            --jar) [ $# -ge 2 ] || { echo "ERROR: --jar requires a file." >&2; exit 1; }; jar=$2; jar_option=1; shift 2 ;;
+            --jar=*) jar=${arg#*=}; jar_option=1; shift ;;
+            --download-jar) download_jar=1; shift ;;
             --certificate-source) [ $# -ge 2 ] || { echo "ERROR: --certificate-source requires a value." >&2; exit 1; }; cert_source=$2; shift 2 ;;
             --certificate-source=*) cert_source=${arg#*=}; shift ;;
             --cert) [ $# -ge 2 ] || { echo "ERROR: --cert requires a file." >&2; exit 1; }; cert=$2; shift 2 ;;
@@ -188,22 +226,39 @@ up_command() {
     fi
     domain=${domain:-${CONFIG_DOMAIN:-${positional[0]:-}}}
     ip=${ip:-${CONFIG_IP:-${positional[1]:-}}}
-    jar=${jar:-${CONFIG_JAR:-${positional[2]:-}}}
+    if [ -n "$jar" ]; then
+        jar_option=1
+    fi
+    if [ "$download_jar" -eq 1 ] && { [ "$jar_option" -eq 1 ] || [ -n "${positional[2]:-}" ]; }; then
+        echo "ERROR: --download-jar cannot be combined with --jar or a positional JAR." >&2
+        exit 1
+    fi
+    jar=${jar:-${positional[2]:-${CONFIG_JAR:-}}}
+    if [ "$download_jar" -eq 1 ]; then
+        jar_source=download
+    elif [ "$jar_option" -eq 1 ] || [ -n "${positional[2]:-}" ]; then
+        jar_source=file
+    else
+        jar_source=${CONFIG_JAR_SOURCE:-}
+    fi
     cert_source=${cert_source:-${CONFIG_CERT_SOURCE:-}}
     cert=${cert:-${CONFIG_CERT:-}}
     key=${key:-${CONFIG_KEY:-}}
     chain=${chain:-${CONFIG_CHAIN:-}}
     fullchain=${fullchain:-${CONFIG_FULLCHAIN:-}}
-    up "$domain" "$ip" "$jar" "$cert" "$key" "$chain" "$fullchain" "$cert_source"
+    up "$domain" "$ip" "$jar" "$cert" "$key" "$chain" "$fullchain" "$cert_source" "$jar_source"
 }
 
 up() {
-    local domain ip jar cert key chain fullchain cert_source file
+    local domain ip jar cert key chain fullchain cert_source jar_source file
+    local restart_needed=0
+    JAR_CHANGED=0
     cert=${4:-}
     key=${5:-}
     chain=${6:-}
     fullchain=${7:-}
     cert_source=${8:-}
+    jar_source=${9:-}
     if [ -z "$cert_source" ] && { [ -n "$cert" ] || [ -n "$key" ] || [ -n "$chain" ] || [ -n "$fullchain" ]; }; then
         cert_source=files
     fi
@@ -211,6 +266,13 @@ up() {
     require_docker
 
     if configured; then
+        case $jar_source in
+            download) download_burp_jar ;;
+            file) install_local_jar "$3" ;;
+            '') ;;
+            *) echo "ERROR: burp_jar_source must be 'download' or 'file'." >&2; exit 1 ;;
+        esac
+        [ "$JAR_CHANGED" -eq 0 ] || restart_needed=1
         ensure_images
         if [ "$cert_source" = files ]; then
             [ -n "$cert" ] && [ -n "$key" ] && { [ -n "$chain" ] || [ -n "$fullchain" ]; } || {
@@ -236,14 +298,15 @@ up() {
                 -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
             printf '%s\n' files > burp/keys/certificate-source
             echo "Supplied certificate files installed."
+            restart_needed=1
         elif [ -n "$cert_source" ] && [ "$cert_source" != letsencrypt ]; then
             echo "ERROR: certificate source must be 'letsencrypt' or 'files'." >&2
             exit 1
         fi
         if docker ps --format '{{.Names}}' | grep -qx burp; then
-            if [ "$cert_source" = files ]; then
+            if [ "$restart_needed" -eq 1 ]; then
                 docker restart burp >/dev/null
-                echo "Burp Collaborator restarted with the supplied certificate."
+                echo "Burp Collaborator restarted with the updated files."
             else
                 echo "Burp Collaborator is already running."
             fi
@@ -291,16 +354,25 @@ up() {
             ;;
     esac
 
-    if [ -s burp/pkg/burp.jar ]; then
-        jar=burp/pkg/burp.jar
-    else
-        jar=$(prompt_value burp-jar "Path to your Burp Suite JAR" "${3:-}")
-        if [ ! -f "$jar" ]; then
-            echo "ERROR: Burp JAR not found at '$jar'." >&2
-            exit 1
-        fi
-        cp "$jar" burp/pkg/burp.jar
+    if [ -z "$jar_source" ] && [ -s burp/pkg/burp.jar ]; then
+        jar_source=existing
+    elif [ -z "$jar_source" ] && [ -t 0 ]; then
+        read -r -p "Burp JAR source [download/file] (default: download): " jar_source
+        jar_source=${jar_source:-download}
+    elif [ -z "$jar_source" ]; then
+        echo "ERROR: No Burp JAR is installed. Use --download-jar or --jar FILE." >&2
+        exit 1
     fi
+
+    case $jar_source in
+        download) download_burp_jar ;;
+        file)
+            jar=$(prompt_value burp-jar "Path to your Burp Suite JAR" "${3:-}")
+            install_local_jar "$jar"
+            ;;
+        existing) ;;
+        *) echo "ERROR: burp_jar_source must be 'download' or 'file'." >&2; exit 1 ;;
+    esac
 
     COLLAB_CERT_SOURCE=$cert_source \
     COLLAB_CERT_FILE=$cert \
