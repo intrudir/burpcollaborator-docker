@@ -65,9 +65,11 @@ On first use, the wizard asks for:
 
 - The delegated domain, such as `collab.com`
 - The server's public IPv4 address
-- Whether to download the latest stable Burp Suite JAR or use a local file
+- Whether to use Let's Encrypt or certificate files from another CA
 
-The command installs the selected JAR into the project, builds the Docker images, requests certificates for both the domain and its wildcard, and starts Collaborator. It also saves the resolved domain and public IP to `collaborator.conf`. Later invocations simply load that file and start the existing installation:
+If no managed Burp Suite JAR exists, the command downloads the latest stable release from PortSwigger and verifies its checksum. It then builds the Docker images, prepares the certificates, and starts Collaborator.
+
+After setup succeeds, the wizard writes a complete `collaborator.conf` containing the domain, public IP, managed JAR location, certificate mode, and managed certificate paths. Later invocations load that file and start the existing installation:
 
 ```bash
 ./collaborator up
@@ -80,9 +82,10 @@ For unattended setup, provide named flags:
 ```bash
 ./collaborator up \
   --domain collab.example.com \
-  --ip 1.2.3.4 \
-  --download-jar
+  --ip 1.2.3.4
 ```
+
+The missing JAR is downloaded automatically. Use `--jar FILE` to bootstrap from a local JAR instead.
 
 ### Or use a config file
 
@@ -96,6 +99,7 @@ cp collaborator.conf.example collaborator.conf
 domain=collab.com
 public_ip=1.2.3.4
 burp_jar_source=download
+certificate_source=letsencrypt
 ```
 
 To use a local JAR instead:
@@ -117,11 +121,27 @@ Use `--config FILE` only when loading a different config path:
 ./collaborator up --config /path/to/another.conf
 ```
 
-CLI flags override config values. `collaborator.conf` is ignored by Git. Generated configs do not contain JAR-download or certificate-replacement directives, so ordinary future `up` commands reuse the managed files.
+CLI flags override config values, and `collaborator.conf` is ignored by Git. After a successful first-time setup, the generated file uses managed values like these:
+
+```ini
+domain=collab.com
+public_ip=1.2.3.4
+
+burp_jar_source=existing
+burp_jar=burp/pkg/burp.jar
+
+certificate_source=managed-letsencrypt
+certificate_file=burp/keys/cert.pem
+private_key_file=burp/keys/privkey.pem
+chain_file=burp/keys/chain.pem
+fullchain_file=burp/keys/fullchain.pem
+```
+
+For a certificate supplied by DigiCert or another CA, the generated source is `managed-files` instead. These managed settings make future `./collaborator up` calls reuse the installed artifacts; they are not replacement or update requests.
 
 ## Burp JAR downloads
 
-JAR downloads are always explicit. If `burp/pkg/burp.jar` already exists, ordinary `./collaborator up` commands reuse it without checking for or downloading updates.
+During first-time setup, the latest stable JAR is downloaded automatically only when `burp/pkg/burp.jar` is missing and no local JAR was specified. If the managed JAR already exists, ordinary `./collaborator up` commands reuse it without checking for or downloading updates.
 
 To explicitly download the latest stable JAR directly from PortSwigger:
 
@@ -249,7 +269,7 @@ Or install a local JAR:
 ./collaborator up --jar /path/to/new/burpsuite.jar
 ```
 
-Collaborator never updates its JAR automatically.
+Collaborator never updates an existing JAR automatically. Automatic downloading is limited to bootstrapping a deployment that has no JAR.
 
 ## Start over completely
 
