@@ -2,6 +2,27 @@
 
 Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificate or cert of your choice. One command performs first-time setup and starts the server; one command shuts it down.
 
+## Table of contents
+
+- [What you need](#what-you-need)
+- [1. Delegate a domain](#1-delegate-a-domain)
+- [2. Start Collaborator](#2-start-collaborator)
+  - [Use CLI flags](#use-cli-flags)
+  - [Or use a config file](#or-use-a-config-file)
+- [Use a certificate from DigiCert or another CA](#use-a-certificate-from-digicert-or-another-ca)
+- [Command cheatsheet](#command-cheatsheet)
+- [Certificate renewal](#certificate-renewal)
+- [Ports](#ports)
+- [Configure Burp Suite](#configure-burp-suite)
+- [Update Burp Suite](#update-burp-suite)
+- [Start over completely](#start-over-completely)
+- [Troubleshooting](#troubleshooting)
+  - [Docker is unavailable](#docker-is-unavailable)
+  - [Port 53 is already in use](#port-53-is-already-in-use)
+  - [Certificate issuance fails](#certificate-issuance-fails)
+- [Return static web content](#return-static-web-content)
+- [Credits](#credits)
+
 ## What you need
 
 - A Linux server with a public IPv4 address
