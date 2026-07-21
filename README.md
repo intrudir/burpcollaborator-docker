@@ -47,8 +47,7 @@ collab.com.      NS  ns1.collab.com.
 ```
 
 For Let's Encrypt:
-TCP & UDP port 53 must be reachable on your server. DNS delegation is required because the setup uses Burp Collaborator's DNS server to complete the Let's Encrypt DNS-01 challenge.
-
+TCP & UDP port 53 must be reachable on your server. Not only for Burp to work but also to do your Let's Encrypt certs.
 See [PortSwigger's DNS configuration documentation](https://portswigger.net/burp/documentation/collaborator/deploying#dns-configuration) for additional background.
 
 ## 2. Start Collaborator
