@@ -249,6 +249,126 @@ up_command() {
     up "$domain" "$ip" "$jar" "$cert" "$key" "$chain" "$fullchain" "$cert_source" "$jar_source"
 }
 
+initialization_cleanup() {
+    local status=$?
+    [ "$status" -ne 0 ] || status=1
+    echo "An error occurred during setup. Correct the problem and run './collaborator up' again." >&2
+    if [ "${BURP_STARTED:-0}" -eq 1 ]; then
+        docker rm -f burp >/dev/null 2>&1 || true
+    fi
+    [ ! -f burp/conf/burp.config.full ] || mv burp/conf/burp.config.full burp/conf/burp.config
+    [ ! -f burp/conf/burp.config.dnsonly ] || rm -f burp/conf/burp.config.dnsonly
+    exit "$status"
+}
+
+validate_initialization() {
+    local domain=$1 ip=$2
+    command -v awk >/dev/null 2>&1 || { echo "ERROR: awk is required." >&2; exit 1; }
+    if [[ ! "$domain" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+        echo "ERROR: '$domain' is not a valid DNS domain name." >&2
+        exit 1
+    fi
+    if ! awk -v ip="$ip" 'BEGIN {
+        n = split(ip, octets, ".")
+        if (n != 4) exit 1
+        for (i = 1; i <= 4; i++) {
+            if (octets[i] !~ /^[0-9]+$/ || octets[i] < 0 || octets[i] > 255) exit 1
+        }
+    }' </dev/null; then
+        echo "ERROR: '$ip' is not a valid IPv4 address." >&2
+        exit 1
+    fi
+    if command -v ss >/dev/null 2>&1 && ss -lntu | grep ':53 ' >/dev/null; then
+        echo "ERROR: Port 53 is already in use, commonly by systemd-resolved." >&2
+        echo "Free TCP and UDP port 53, then run setup again." >&2
+        exit 1
+    fi
+}
+
+generate_server_config() {
+    local domain=$1 ip=$2 metrics=$3
+    docker run --rm --entrypoint jq \
+        -v "$PWD/burp/conf:/conf:ro" certbot-burp \
+        --arg domain "$domain" --arg ip "$ip" --arg metrics "$metrics" '
+        .serverDomain = $domain |
+        .eventCapture.publicAddress = [$ip] |
+        .polling.http.publicAddress = [$ip] |
+        .polling.https.publicAddress = [$ip] |
+        .dns.interfaces[].publicAddress = [$ip] |
+        .metrics.path = $metrics
+    ' /conf/burp.config.template > burp/conf/burp.config
+}
+
+initialize_deployment() {
+    local domain=$1 ip=$2 cert_source=$3 cert=$4 key=$5 chain=$6 fullchain=$7
+    local metrics
+    BURP_STARTED=0
+    trap initialization_cleanup ERR INT TERM
+
+    [ -s burp/pkg/burp.jar ] || { echo "ERROR: burp/pkg/burp.jar is missing." >&2; exit 1; }
+    metrics=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+
+    echo "Initializing *.$domain on public IP $ip"
+    docker build -t certbot-burp certbot
+    docker build -t burp burp
+    generate_server_config "$domain" "$ip" "$metrics"
+
+    if [ "$cert_source" = files ]; then
+        echo "Installing supplied certificate files..."
+        cp -L "$cert" burp/keys/cert.pem
+        cp -L "$key" burp/keys/privkey.pem
+        if [ -n "$chain" ]; then
+            cp -L "$chain" burp/keys/chain.pem
+        else
+            cp -L "$fullchain" burp/keys/chain.pem
+        fi
+        if [ -n "$fullchain" ]; then
+            cp -L "$fullchain" burp/keys/fullchain.pem
+        else
+            awk '1' "$cert" "$chain" > burp/keys/fullchain.pem
+        fi
+        docker run --rm --entrypoint chown \
+            -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+        printf '%s\n' files > burp/keys/certificate-source
+        ./burp/run.sh
+        trap - ERR INT TERM
+        echo
+        echo "SUCCESS! Burp is running with the supplied certificate for *.$domain"
+        echo "Certificate renewal is managed by the certificate provider or administrator."
+        return
+    fi
+
+    docker run --rm --entrypoint jq \
+        -v "$PWD/burp/conf:/conf:ro" certbot-burp \
+        'del(.eventCapture.https, .eventCapture.smtps, .polling)' \
+        /conf/burp.config > burp/conf/burp.config.dnsonly
+    cp burp/conf/burp.config burp/conf/burp.config.full
+    mv burp/conf/burp.config.dnsonly burp/conf/burp.config
+
+    ./burp/run-dnsonly.sh
+    BURP_STARTED=1
+    ./certbot/new.sh "$domain"
+    mv burp/conf/burp.config.full burp/conf/burp.config
+
+    cp -L "certbot/letsencrypt/live/$domain/cert.pem" burp/keys/cert.pem
+    cp -L "certbot/letsencrypt/live/$domain/chain.pem" burp/keys/chain.pem
+    cp -L "certbot/letsencrypt/live/$domain/fullchain.pem" burp/keys/fullchain.pem
+    cp -L "certbot/letsencrypt/live/$domain/privkey.pem" burp/keys/privkey.pem
+    docker run --rm --entrypoint chown \
+        -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+    printf '%s\n' letsencrypt > burp/keys/certificate-source
+
+    docker stop burp
+    docker rm burp
+    BURP_STARTED=0
+    ./burp/run.sh
+    trap - ERR INT TERM
+
+    echo
+    echo "SUCCESS! Burp is running with the Let's Encrypt certificate for *.$domain"
+    echo "Your metrics path is $metrics. Change addressWhitelist to access it remotely."
+}
+
 up() {
     local domain ip jar cert key chain fullchain cert_source jar_source file
     local restart_needed=0
@@ -354,6 +474,9 @@ up() {
             ;;
     esac
 
+    # Validate the deployment before copying or downloading a JAR.
+    validate_initialization "$domain" "$ip"
+
     if [ -z "$jar_source" ] && [ -s burp/pkg/burp.jar ]; then
         jar_source=existing
     elif [ -z "$jar_source" ] && [ -t 0 ]; then
@@ -374,12 +497,7 @@ up() {
         *) echo "ERROR: burp_jar_source must be 'download' or 'file'." >&2; exit 1 ;;
     esac
 
-    COLLAB_CERT_SOURCE=$cert_source \
-    COLLAB_CERT_FILE=$cert \
-    COLLAB_KEY_FILE=$key \
-    COLLAB_CHAIN_FILE=$chain \
-    COLLAB_FULLCHAIN_FILE=$fullchain \
-        ./init.sh "$domain" "$ip"
+    initialize_deployment "$domain" "$ip" "$cert_source" "$cert" "$key" "$chain" "$fullchain"
 }
 
 down() {
