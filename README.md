@@ -40,11 +40,10 @@ If you're using a subdomain instead, you can set the NS records for it by settin
 
 Confirm the NS records have IPs:
 ```bash
-dig A collab.com
+dig ns1.collab.com
 
 # Should look something like
 ns1.collab.com.     A      1.2.3.4
-ns2.collab.com.     A      1.2.3.4
 ```
 
 Confirm the NS delegation:
