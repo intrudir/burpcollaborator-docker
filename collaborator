@@ -64,6 +64,7 @@ ensure_images() {
 download_burp_jar() {
     echo "Burp downloads are subject to PortSwigger's license terms:"
     echo "https://portswigger.net/burp/eula"
+    echo "Preparing the verified JAR downloader..."
     docker build -q -t certbot-burp certbot >/dev/null
     local output
     output=$(docker run --rm --entrypoint python3 \

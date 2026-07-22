@@ -15,6 +15,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class Response(io.BytesIO):
+    def __init__(self, content=b"", content_length=None):
+        super().__init__(content)
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
     def __enter__(self):
         return self
 
@@ -38,6 +44,18 @@ def metadata(checksum):
 
 
 class DownloadTests(unittest.TestCase):
+    def test_progress_bar_reports_download_percentage(self):
+        progress = io.StringIO()
+        with patch.object(MODULE.sys, "stderr", progress):
+            reporter = MODULE.DownloadProgress(10)
+            reporter.update(5)
+            reporter.update(5)
+            reporter.finish()
+        rendered = progress.getvalue()
+        self.assertIn("50%", rendered)
+        self.assertIn("100%", rendered)
+        self.assertTrue(rendered.endswith("\n"))
+
     def test_downloads_verified_jar_atomically(self):
         jar = b"PK\x03\x04new jar"
         checksum = hashlib.sha256(jar).hexdigest()

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import os
 import re
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -19,6 +20,34 @@ DOWNLOAD_URL = (
     "?product=desktop&version={version}&type=Jar"
 )
 USER_AGENT = "burpcollaborator-docker/1.0"
+
+
+class DownloadProgress:
+    """Render live download progress on stderr while stdout remains machine-readable."""
+
+    def __init__(self, total: int | None) -> None:
+        self.total = total
+        self.downloaded = 0
+
+    def update(self, amount: int) -> None:
+        self.downloaded += amount
+        downloaded_mb = self.downloaded / (1024 * 1024)
+        if self.total:
+            percent = min(100, self.downloaded * 100 // self.total)
+            width = 30
+            complete = min(width, self.downloaded * width // self.total)
+            bar = "#" * complete + "-" * (width - complete)
+            total_mb = self.total / (1024 * 1024)
+            message = (
+                f"\rDownloading Burp Suite JAR: [{bar}] {percent:3d}% "
+                f"({downloaded_mb:.1f}/{total_mb:.1f} MiB)"
+            )
+        else:
+            message = f"\rDownloading Burp Suite JAR: {downloaded_mb:.1f} MiB"
+        print(message, end="", file=sys.stderr, flush=True)
+
+    def finish(self) -> None:
+        print(file=sys.stderr, flush=True)
 
 
 class DownloadMetadataParser(HTMLParser):
@@ -100,17 +129,24 @@ def download_latest(
     temporary_name: str | None = None
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
-            with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as temporary:
-                temporary_name = temporary.name
-                digest = hashlib.sha256()
-                first_bytes = b""
-                while block := response.read(1024 * 1024):
-                    if not first_bytes:
-                        first_bytes = block[:4]
-                    temporary.write(block)
-                    digest.update(block)
-                temporary.flush()
-                os.fsync(temporary.fileno())
+            content_length = getattr(response, "headers", {}).get("Content-Length")
+            total = int(content_length) if content_length and content_length.isdigit() else None
+            progress = DownloadProgress(total)
+            try:
+                with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as temporary:
+                    temporary_name = temporary.name
+                    digest = hashlib.sha256()
+                    first_bytes = b""
+                    while block := response.read(1024 * 1024):
+                        if not first_bytes:
+                            first_bytes = block[:4]
+                        temporary.write(block)
+                        digest.update(block)
+                        progress.update(len(block))
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+            finally:
+                progress.finish()
         if first_bytes != b"PK\x03\x04":
             raise RuntimeError("Downloaded file is not a JAR/ZIP archive")
         actual_sha256 = digest.hexdigest()
@@ -134,6 +170,7 @@ def main() -> int:
     argument_parser.add_argument("--download-url-template", default=DOWNLOAD_URL)
     args = argument_parser.parse_args()
 
+    print("Checking PortSwigger for the latest stable JAR...", file=sys.stderr, flush=True)
     changed, version, checksum = download_latest(
         args.output, args.metadata_url, args.download_url_template
     )
