@@ -295,7 +295,7 @@ initialization_cleanup() {
     if [ "${BURP_STARTED:-0}" -eq 1 ]; then
         docker rm -f burp >/dev/null 2>&1 || true
     fi
-    [ ! -f burp/conf/burp.config.full ] || mv burp/conf/burp.config.full burp/conf/burp.config
+    [ ! -f burp/conf/burp.config.full ] || mv -f burp/conf/burp.config.full burp/conf/burp.config
     [ ! -f burp/conf/burp.config.dnsonly ] || rm -f burp/conf/burp.config.dnsonly
     exit "$status"
 }
@@ -382,12 +382,12 @@ initialize_deployment() {
         'del(.eventCapture.https, .eventCapture.smtps, .polling)' \
         /conf/burp.config > burp/conf/burp.config.dnsonly
     cp burp/conf/burp.config burp/conf/burp.config.full
-    mv burp/conf/burp.config.dnsonly burp/conf/burp.config
+    mv -f burp/conf/burp.config.dnsonly burp/conf/burp.config
 
     ./burp/run-dnsonly.sh
     BURP_STARTED=1
     ./certbot/new.sh "$domain"
-    mv burp/conf/burp.config.full burp/conf/burp.config
+    mv -f burp/conf/burp.config.full burp/conf/burp.config
 
     cp -L "certbot/letsencrypt/live/$domain/cert.pem" burp/keys/cert.pem
     cp -L "certbot/letsencrypt/live/$domain/chain.pem" burp/keys/chain.pem
