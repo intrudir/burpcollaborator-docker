@@ -338,6 +338,24 @@ generate_server_config() {
     ' /conf/burp.config.template > burp/conf/burp.config
 }
 
+install_letsencrypt_certificates() {
+    local domain=$1
+    docker run --rm --entrypoint sh \
+        -v "$PWD/certbot/letsencrypt:/etc/letsencrypt:ro" \
+        -v "$PWD/burp/keys:/keys" \
+        certbot-burp -c '
+            set -eu
+            lineage="/etc/letsencrypt/live/$1"
+            cp -L -f "$lineage/cert.pem" /keys/cert.pem
+            cp -L -f "$lineage/chain.pem" /keys/chain.pem
+            cp -L -f "$lineage/fullchain.pem" /keys/fullchain.pem
+            cp -L -f "$lineage/privkey.pem" /keys/privkey.pem
+            chmod 644 /keys/cert.pem /keys/chain.pem /keys/fullchain.pem
+            chmod 600 /keys/privkey.pem
+            chown 999:999 /keys/privkey.pem
+        ' sh "$domain"
+}
+
 initialize_deployment() {
     local domain=$1 ip=$2 cert_source=$3 cert=$4 key=$5 chain=$6 fullchain=$7
     local metrics
@@ -389,12 +407,7 @@ initialize_deployment() {
     ./certbot/new.sh "$domain"
     mv -f burp/conf/burp.config.full burp/conf/burp.config
 
-    cp -L "certbot/letsencrypt/live/$domain/cert.pem" burp/keys/cert.pem
-    cp -L "certbot/letsencrypt/live/$domain/chain.pem" burp/keys/chain.pem
-    cp -L "certbot/letsencrypt/live/$domain/fullchain.pem" burp/keys/fullchain.pem
-    cp -L "certbot/letsencrypt/live/$domain/privkey.pem" burp/keys/privkey.pem
-    docker run --rm --entrypoint chown \
-        -v "$PWD/burp/keys:/keys" certbot-burp 999:999 /keys/privkey.pem
+    install_letsencrypt_certificates "$domain"
     printf '%s\n' letsencrypt > burp/keys/certificate-source
 
     docker stop burp
