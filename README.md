@@ -34,17 +34,26 @@ Run a private Burp Collaborator Server in Docker with a Let's Encrypt certificat
 
 ## 1. Delegate a domain
 
-Choose a dedicated domain such as `collab.com`. Create an A record for its nameserver and set the glue records (name servers):
-- replace 1.2.3.4 with your actual server IP
+Choose a dedicated domain or subdomain.
+If you're using a top level domain like `collab.com`, set the NS server (glue) records for it.
+If you're using a subdomain instead, you can set the NS records for it by setting A records for ns1 and ns2.
 
-Confirm the delegation before starting setup:
+Confirm the NS records have IPs:
+```bash
+dig A collab.com
+
+# Should look something like
+ns1.collab.com.     A      1.2.3.4
+ns2.collab.com.     A      1.2.3.4
+```
+
+Confirm the NS delegation:
 ```bash
 dig NS collab.com
-dig A ns1.collab.com
 
-# Should look somehting like
-ns1.collab.com.  A   1.2.3.4
+# Should look something like
 collab.com.      NS  ns1.collab.com.
+collab.com.      NS  ns2.collab.com.
 ```
 
 For Let's Encrypt:
