@@ -20,7 +20,8 @@ RUN wget -q "https://download.oracle.com/java/21/archive/jdk-${JDK_VERSION}_linu
 
 # Create a user and group for Burp
 RUN groupadd -g 999 burp && \
-    useradd -r -u 999 -g burp -d /opt/burp burp
+    useradd -r -u 999 -g burp -d /opt/burp burp && \
+    install -d -o burp -g burp /opt/burp/.java/.userPrefs
 
 # Switch to the burp user
 USER burp
