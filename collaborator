@@ -14,6 +14,7 @@ Usage:
   ./collaborator up --domain DOMAIN --ip ADDRESS [--jar FILE | --download-jar]
   ./collaborator up [domain] [public-ip] [burp-jar]
   ./collaborator down
+  ./collaborator update
   ./collaborator status
   ./collaborator logs
   ./collaborator renew
@@ -30,7 +31,8 @@ JAR options:
   --download-jar  Explicitly download the latest stable JAR from PortSwigger
 
 If no managed JAR exists during first-time setup, it is downloaded automatically.
-Existing managed JARs are never updated unless --download-jar is supplied.
+Use ./collaborator update to update the managed JAR.
+Update restarts a running server only when the JAR changes; stopped servers stay stopped.
 EOF
 }
 
@@ -560,6 +562,15 @@ up() {
     fi
 }
 
+update() {
+    require_docker
+    download_burp_jar
+    if [ "$JAR_CHANGED" -eq 1 ] && docker ps --format '{{.Names}}' | grep -qx burp; then
+        docker restart burp >/dev/null
+        echo "Burp Collaborator restarted with the updated JAR."
+    fi
+}
+
 down() {
     require_docker
     docker rm -f burp certbot >/dev/null 2>&1 || true
@@ -587,6 +598,10 @@ main() {
             ;;
         down)
             down
+            ;;
+        update)
+            [ $# -eq 1 ] || { echo "ERROR: update takes no arguments." >&2; exit 1; }
+            update
             ;;
         status)
             status

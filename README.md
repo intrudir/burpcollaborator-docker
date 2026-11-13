@@ -154,10 +154,12 @@ During first-time setup, the latest stable JAR is downloaded automatically only 
 To explicitly download the latest stable JAR directly from PortSwigger:
 
 ```bash
-./collaborator up --download-jar
+./collaborator update
 ```
 
 The command displays the [PortSwigger license agreement](https://portswigger.net/burp/eula), obtains the version and SHA-256 checksum from the official [Burp download page](https://portswigger.net/burp/downloads), and verifies the JAR before installing it. A failed download or checksum mismatch leaves the existing JAR untouched.
+
+`update` restarts a running Collaborator container only when the JAR changes. A stopped server stays stopped. It does not require setup prompts or change deployment settings or certificates.
 
 Use `--jar FILE` to explicitly install a local JAR. `--jar` and `--download-jar` cannot be combined. When an explicitly installed JAR changes, a running Collaborator container is restarted; when the JAR is already identical, it is left running.
 
@@ -202,6 +204,12 @@ Stop it while preserving the JAR, configuration, and certificates:
 
 ```bash
 ./collaborator down
+```
+
+Update the JAR, restarting a running server only if it changes:
+
+```bash
+./collaborator update
 ```
 
 Check its state:
@@ -268,7 +276,7 @@ The generated server configuration is stored at `burp/conf/burp.config`. The ran
 Explicitly download the latest stable JAR:
 
 ```bash
-./collaborator up --download-jar
+./collaborator update
 ```
 
 Or install a local JAR:
